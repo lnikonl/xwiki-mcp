@@ -1,0 +1,4 @@
+include:
+  - component: $CI_SERVER_FQDN/components/main_components/buildkit_job@main
+    inputs:
+      IMAGENAME: <SET NAME> # like as lnikonl/<SET NAME>
