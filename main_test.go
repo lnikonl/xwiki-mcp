@@ -1,0 +1,390 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+type fakeXWiki struct {
+	mu        sync.Mutex
+	auths     []string
+	paths     []string
+	putBodies []map[string]any
+	deleted   []string
+}
+
+func (f *fakeXWiki) handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.auths = append(f.auths, r.Header.Get("Authorization"))
+		f.paths = append(f.paths, r.URL.RequestURI())
+		f.mu.Unlock()
+
+		writeJSON := func(v any) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(v)
+		}
+
+		if r.URL.Path == "/search" {
+			writeJSON(map[string]any{"searchResults": []map[string]any{
+				{"id": "xwiki:Main.WebHome", "pageFullName": "Main.WebHome", "pageTitle": "Home", "score": 95.5, "snippet": "hello world"},
+			}})
+			return
+		}
+
+		segs := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		i := 0
+		var spaceParts []string
+		for i+1 < len(segs) && segs[i] == "spaces" {
+			spaceParts = append(spaceParts, segs[i+1])
+			i += 2
+		}
+		space := strings.Join(spaceParts, ".")
+		rest := segs[i:]
+
+		if len(rest) == 1 && rest[0] == "spaces" && len(spaceParts) == 0 {
+			writeJSON(map[string]any{"spaces": []map[string]any{
+				{"id": "xwiki:Main", "name": "Main", "home": "/rest/wikis/xwiki/spaces/Main/pages/WebHome", "url": "/rest/wikis/xwiki/spaces/Main"},
+			}})
+			return
+		}
+
+		if len(rest) >= 1 && rest[0] == "pages" {
+			pageName := ""
+			if len(rest) >= 2 {
+				pageName = rest[1]
+			}
+			suffix := ""
+			if len(rest) >= 3 {
+				suffix = rest[2]
+			}
+			fullName := space + "." + pageName
+			switch r.Method {
+			case http.MethodGet:
+				switch {
+				case pageName == "":
+					writeJSON(map[string]any{"pageSummaries": []map[string]any{
+						{"id": "xwiki:" + space + ".WebHome", "fullName": space + ".WebHome", "name": "WebHome", "title": "Home", "version": "1.1", "author": "XWiki.bot"},
+					}})
+				case suffix == "history":
+					writeJSON(map[string]any{"pageVersions": []map[string]any{
+						{"version": "1.2", "author": "XWiki.bot", "date": "2026-01-01", "comment": "edit"},
+					}})
+				case suffix == "attachments":
+					writeJSON(map[string]any{"attachments": []map[string]any{
+						{"id": fullName + "@img.png", "name": "img.png", "size": 1024, "version": "1.0", "author": "XWiki.bot", "date": "2026-01-01"},
+					}})
+				default:
+					writeJSON(map[string]any{
+						"id": "xwiki:" + fullName, "fullName": fullName, "space": space, "name": pageName,
+						"title": "Home", "version": "1.2", "author": "XWiki.bot",
+						"content": "= Hello =", "syntax": "xwiki/2.1",
+					})
+				}
+			case http.MethodPut:
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t := http.StatusBadRequest
+					http.Error(w, err.Error(), t)
+					return
+				}
+				f.mu.Lock()
+				f.putBodies = append(f.putBodies, body)
+				f.mu.Unlock()
+				w.Header().Set("Location", "/rest/wikis/xwiki/spaces/"+strings.Join(spaceParts, "/")+"/pages/"+pageName)
+				w.WriteHeader(http.StatusCreated)
+			case http.MethodDelete:
+				f.mu.Lock()
+				f.deleted = append(f.deleted, fullName)
+				f.mu.Unlock()
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				http.Error(w, "unexpected", http.StatusBadRequest)
+			}
+			return
+		}
+
+		http.Error(w, fmt.Sprintf("unhandled path %s", r.URL.Path), http.StatusNotFound)
+	})
+}
+
+func (f *fakeXWiki) lastAuth() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.auths) == 0 {
+		return ""
+	}
+	return f.auths[len(f.auths)-1]
+}
+
+func (f *fakeXWiki) lastPath() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.paths) == 0 {
+		return ""
+	}
+	return f.paths[len(f.paths)-1]
+}
+
+type testEnv struct {
+	xwiki  *fakeXWiki
+	client *client.Client
+	srv    *httptest.Server
+}
+
+func setup(t *testing.T, opts ...func(*ToolConfig)) *testEnv {
+	t.Helper()
+	xwiki := &fakeXWiki{}
+	xwikiSrv := httptest.NewServer(xwiki.handler())
+	t.Cleanup(xwikiSrv.Close)
+
+	cfg := ToolConfig{BaseURL: xwikiSrv.URL, Timeout: 5 * time.Second}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	mcpServer := server.NewMCPServer("xwiki-mcp", "test", server.WithToolCapabilities(true))
+	NewTools(cfg).Register(mcpServer)
+	srv := httptest.NewServer(server.NewStreamableHTTPServer(mcpServer))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewStreamableHttpClient(srv.URL,
+		transport.WithHTTPHeaders(map[string]string{HeaderXWikiToken: "test-token"}))
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "0.0.0"},
+		},
+	}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	return &testEnv{xwiki: xwiki, client: c, srv: srv}
+}
+
+func callTool(t *testing.T, c *client.Client, name string, args map[string]any) string {
+	t.Helper()
+	res, err := c.CallTool(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: name, Arguments: args},
+	})
+	if err != nil {
+		t.Fatalf("call %s: %v", name, err)
+	}
+	if res.IsError {
+		t.Fatalf("tool %s returned error: %s", name, textContent(res))
+	}
+	return textContent(res)
+}
+
+func textContent(res *mcp.CallToolResult) string {
+	if len(res.Content) == 0 {
+		return ""
+	}
+	if t, ok := res.Content[0].(mcp.TextContent); ok {
+		return t.Text
+	}
+	return fmt.Sprintf("%v", res.Content[0])
+}
+
+func TestListSpacesSendsBearerToken(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "list_spaces", nil)
+	if !strings.Contains(out, "Main") {
+		t.Fatalf("expected spaces list to contain Main, got: %s", out)
+	}
+	if got := env.xwiki.lastAuth(); got != "Bearer test-token" {
+		t.Fatalf("expected Authorization 'Bearer test-token', got %q", got)
+	}
+	if got := env.xwiki.lastPath(); got != "/spaces?start=0&number=200" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestGetPage(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "get_page", map[string]any{"space": "Main", "page": "WebHome"})
+	if !strings.Contains(out, "= Hello =") {
+		t.Fatalf("expected page content, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/spaces/Main/pages/WebHome" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestListPagesNestedSpace(t *testing.T) {
+	env := setup(t)
+	callTool(t, env.client, "list_pages", map[string]any{"space": "Manuals/ansible"})
+	if got := env.xwiki.lastPath(); got != "/spaces/Manuals/spaces/ansible/pages?start=0&number=50" {
+		t.Fatalf("unexpected path %q", got)
+	}
+	env2 := setup(t)
+	callTool(t, env2.client, "list_pages", map[string]any{"space": "Manuals.ansible"})
+	if got := env2.xwiki.lastPath(); got != "/spaces/Manuals/spaces/ansible/pages?start=0&number=50" {
+		t.Fatalf("dot notation failed, path %q", got)
+	}
+}
+
+func TestSavePage(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "save_page", map[string]any{
+		"space": "Main", "page": "NewPage",
+		"title": "New", "content": "**bold**", "comment": "created",
+	})
+	if !strings.Contains(out, "saved") {
+		t.Fatalf("unexpected result: %s", out)
+	}
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	if len(env.xwiki.putBodies) != 1 {
+		t.Fatalf("expected one PUT, got %d", len(env.xwiki.putBodies))
+	}
+	body := env.xwiki.putBodies[0]
+	if body["title"] != "New" || body["content"] != "**bold**" || body["syntax"] != "xwiki/2.1" || body["comment"] != "created" {
+		t.Fatalf("unexpected PUT body: %v", body)
+	}
+}
+
+func TestSearch(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "search_pages", map[string]any{"query": "hello"})
+	if !strings.Contains(out, "hello world") {
+		t.Fatalf("expected search snippet, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/search?q=hello&start=0&number=20" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestHistoryAndAttachments(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "get_page_history", map[string]any{"space": "Main", "page": "WebHome"})
+	if !strings.Contains(out, "1.2") {
+		t.Fatalf("expected version, got: %s", out)
+	}
+	out = callTool(t, env.client, "list_attachments", map[string]any{"space": "Main", "page": "WebHome"})
+	if !strings.Contains(out, "img.png") {
+		t.Fatalf("expected attachment, got: %s", out)
+	}
+}
+
+func TestDeletePageDisabledByDefault(t *testing.T) {
+	env := setup(t)
+	res, err := env.client.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "delete_page" {
+			t.Fatalf("delete_page should not be registered without --allow-delete")
+		}
+	}
+}
+
+func TestDeletePageEnabled(t *testing.T) {
+	env := setup(t, func(c *ToolConfig) { c.AllowDelete = true })
+	callTool(t, env.client, "delete_page", map[string]any{"space": "Main", "page": "WebHome"})
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	if len(env.xwiki.deleted) != 1 || env.xwiki.deleted[0] != "Main.WebHome" {
+		t.Fatalf("expected Main.WebHome deleted, got %v", env.xwiki.deleted)
+	}
+}
+
+func TestTokenFromAuthorizationHeader(t *testing.T) {
+	env := setup(t)
+	c, err := client.NewStreamableHttpClient(env.srv.URL,
+		transport.WithHTTPHeaders(map[string]string{HeaderAuthorization: "Bearer custom-token"}))
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "0.0.0"},
+		},
+	}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	callTool(t, c, "list_spaces", nil)
+	if got := env.xwiki.lastAuth(); got != "Bearer custom-token" {
+		t.Fatalf("expected 'Bearer custom-token', got %q", got)
+	}
+}
+
+func TestDefaultTokenFallback(t *testing.T) {
+	xwiki := &fakeXWiki{}
+	xwikiSrv := httptest.NewServer(xwiki.handler())
+	t.Cleanup(xwikiSrv.Close)
+
+	mcpServer := server.NewMCPServer("xwiki-mcp", "test", server.WithToolCapabilities(true))
+	NewTools(ToolConfig{BaseURL: xwikiSrv.URL, DefaultToken: "default-token", Timeout: 5 * time.Second}).Register(mcpServer)
+	srv := httptest.NewServer(server.NewStreamableHTTPServer(mcpServer))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewStreamableHttpClient(srv.URL)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "0.0.0"},
+		},
+	}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	callTool(t, c, "list_spaces", nil)
+	if got := xwiki.lastAuth(); got != "Bearer default-token" {
+		t.Fatalf("expected fallback 'Bearer default-token', got %q", got)
+	}
+}
+
+func TestNoTokenError(t *testing.T) {
+	xwiki := &fakeXWiki{}
+	xwikiSrv := httptest.NewServer(xwiki.handler())
+	t.Cleanup(xwikiSrv.Close)
+
+	mcpServer := server.NewMCPServer("xwiki-mcp", "test", server.WithToolCapabilities(true))
+	NewTools(ToolConfig{BaseURL: xwikiSrv.URL, Timeout: 5 * time.Second}).Register(mcpServer)
+	srv := httptest.NewServer(server.NewStreamableHTTPServer(mcpServer))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewStreamableHttpClient(srv.URL)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "0.0.0"},
+		},
+	}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	res, err := c.CallTool(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "list_spaces", Arguments: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected tool error without token, got: %s", textContent(res))
+	}
+	if !strings.Contains(textContent(res), "no XWiki token") {
+		t.Fatalf("unexpected error text: %s", textContent(res))
+	}
+}
