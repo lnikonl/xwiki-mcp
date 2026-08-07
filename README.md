@@ -39,4 +39,7 @@ go build -o xwiki-mcp .
 - `search_pages` — full-text search
 - `get_page_history` — page versions
 - `list_attachments` — page attachments
+- `list_tags` — all tags defined in the wiki
+- `set_page_tags` — assign tags to a page (mode `replace`/`add`; replaces or merges the tag set)
+- `get_pages_by_tag` — pages tagged with any of the given tags
 - `delete_page` — only when `-allow-delete` is set

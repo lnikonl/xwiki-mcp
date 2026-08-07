@@ -23,6 +23,8 @@ type fakeXWiki struct {
 	paths     []string
 	putBodies []map[string]any
 	deleted   []string
+	tagForm   []string
+	tags      []string
 }
 
 func (f *fakeXWiki) handler() http.Handler {
@@ -40,6 +42,26 @@ func (f *fakeXWiki) handler() http.Handler {
 		if r.URL.Path == "/search" {
 			writeJSON(map[string]any{"searchResults": []map[string]any{
 				{"id": "xwiki:Main.WebHome", "pageFullName": "Main.WebHome", "pageTitle": "Home", "score": 95.5, "snippet": "hello world"},
+			}})
+			return
+		}
+
+		if r.URL.Path == "/tags" {
+			writeJSON(map[string]any{"tags": []map[string]any{
+				{"name": "ansible"},
+				{"name": "linux"},
+			}})
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/tags/") {
+			if r.Method != http.MethodGet {
+				http.Error(w, "unexpected", http.StatusBadRequest)
+				return
+			}
+			writeJSON(map[string]any{"pageSummaries": []map[string]any{
+				{"id": "xwiki:Manuals.ansible.WebHome", "fullName": "Manuals.ansible.WebHome", "name": "WebHome", "title": "Ansible", "version": "3.1"},
+				{"id": "xwiki:Main.Terms", "fullName": "Main.Terms", "name": "Terms", "title": "Terms", "version": "1.0"},
 			}})
 			return
 		}
@@ -86,6 +108,11 @@ func (f *fakeXWiki) handler() http.Handler {
 					writeJSON(map[string]any{"attachments": []map[string]any{
 						{"id": fullName + "@img.png", "name": "img.png", "size": 1024, "version": "1.0", "author": "XWiki.bot", "date": "2026-01-01"},
 					}})
+				case suffix == "tags":
+					writeJSON(map[string]any{"tags": []map[string]any{
+						{"name": "ansible"},
+						{"name": "linux"},
+					}})
 				default:
 					writeJSON(map[string]any{
 						"id": "xwiki:" + fullName, "fullName": fullName, "space": space, "name": pageName,
@@ -94,6 +121,17 @@ func (f *fakeXWiki) handler() http.Handler {
 					})
 				}
 			case http.MethodPut:
+				if suffix == "tags" {
+					if err := r.ParseForm(); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					f.mu.Lock()
+					f.tagForm = r.Form["tag"]
+					f.mu.Unlock()
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
 				var body map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t := http.StatusBadRequest
@@ -350,6 +388,77 @@ func TestDefaultTokenFallback(t *testing.T) {
 	callTool(t, c, "list_spaces", nil)
 	if got := xwiki.lastAuth(); got != "Bearer default-token" {
 		t.Fatalf("expected fallback 'Bearer default-token', got %q", got)
+	}
+}
+
+func TestListTags(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "list_tags", nil)
+	if !strings.Contains(out, "ansible") || !strings.Contains(out, "linux") {
+		t.Fatalf("expected tags, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/tags" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestGetPagesByTag(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "get_pages_by_tag", map[string]any{"tags": []any{"ansible"}})
+	if !strings.Contains(out, "Manuals.ansible.WebHome") {
+		t.Fatalf("expected tagged pages, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/tags/ansible?start=0&number=50&prettyNames=false" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestSetPageTagsReplace(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "set_page_tags", map[string]any{
+		"space": "Main", "page": "WebHome", "tags": []any{"ansible", "linux"},
+	})
+	if !strings.Contains(out, "ansible, linux") {
+		t.Fatalf("unexpected result: %s", out)
+	}
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	if len(env.xwiki.tagForm) != 2 || env.xwiki.tagForm[0] != "ansible" || env.xwiki.tagForm[1] != "linux" {
+		t.Fatalf("expected form tags [ansible linux], got %v", env.xwiki.tagForm)
+	}
+}
+
+func TestSetPageTagsAddModeMergesExisting(t *testing.T) {
+	env := setup(t)
+	callTool(t, env.client, "set_page_tags", map[string]any{
+		"space": "Main", "page": "WebHome",
+		"tags": []any{"nginx"}, "mode": "add",
+	})
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	want := []string{"nginx", "ansible", "linux"}
+	if len(env.xwiki.tagForm) != len(want) {
+		t.Fatalf("expected merged tags %v, got %v", want, env.xwiki.tagForm)
+	}
+	for i := range want {
+		if env.xwiki.tagForm[i] != want[i] {
+			t.Fatalf("expected merged tags %v, got %v", want, env.xwiki.tagForm)
+		}
+	}
+}
+
+func TestSetPageTagsInvalidMode(t *testing.T) {
+	env := setup(t)
+	res, err := env.client.CallTool(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "set_page_tags", Arguments: map[string]any{
+			"space": "Main", "page": "WebHome", "tags": []any{"x"}, "mode": "upsert",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.IsError || !strings.Contains(textContent(res), "invalid mode") {
+		t.Fatalf("expected invalid mode error, got: %s", textContent(res))
 	}
 }
 

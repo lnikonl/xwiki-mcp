@@ -35,6 +35,9 @@ func (t *tools) Register(mcpServer *server.MCPServer) {
 		{Tool: toolSearchPages, Handler: t.handleSearchPages},
 		{Tool: toolGetPageHistory, Handler: t.handleGetPageHistory},
 		{Tool: toolListAttachments, Handler: t.handleListAttachments},
+		{Tool: toolListTags, Handler: t.handleListTags},
+		{Tool: toolSetPageTags, Handler: t.handleSetPageTags},
+		{Tool: toolGetPagesByTag, Handler: t.handleGetPagesByTag},
 	}
 	if t.cfg.AllowDelete {
 		reg = append(reg, server.ServerTool{Tool: toolDeletePage, Handler: t.handleDeletePage})
@@ -99,6 +102,39 @@ func nonNegative(v int64) int64 {
 	return v
 }
 
+func strSliceParam(args map[string]any, key string) []string {
+	v, ok := args[key]
+	if !ok {
+		return nil
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if s, ok := item.(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+func dedupStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 var toolListSpaces = mcp.NewTool("list_spaces",
 	mcp.WithDescription("List all spaces in the wiki, including nested ones (flat list). Use to discover the space structure before working with pages."),
 	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
@@ -155,6 +191,27 @@ var toolListAttachments = mcp.NewTool("list_attachments",
 	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
 	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
 	mcp.WithNumber("number", mcp.Description("Maximum number of attachments to return"), mcp.DefaultNumber(50)),
+)
+
+var toolListTags = mcp.NewTool("list_tags",
+	mcp.WithDescription("List all tags defined in the wiki, sorted case-insensitively by name."),
+)
+
+var toolSetPageTags = mcp.NewTool("set_page_tags",
+	mcp.WithDescription("Assign tags to a page (XWiki REST PUT /tags, replaces the page's tag set). Use mode 'replace' to set the exact list of tags (empty list clears all tags); use mode 'add' to merge the given tags with the existing ones."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithArray("tags", mcp.Required(), mcp.WithStringItems(), mcp.Description("Tags to assign to the page")),
+	mcp.WithString("mode", mcp.Description("'replace' (default) or 'add'"), mcp.DefaultString("replace")),
+	mcp.WithBoolean("minor_revision", mcp.Description("Save the change as a minor revision"), mcp.DefaultBool(false)),
+)
+
+var toolGetPagesByTag = mcp.NewTool("get_pages_by_tag",
+	mcp.WithDescription("List pages tagged with any of the given tags (logical OR), ordered alphabetically by full name."),
+	mcp.WithArray("tags", mcp.Required(), mcp.WithStringItems(), mcp.Description("Tag names to look up")),
+	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
+	mcp.WithNumber("number", mcp.Description("Maximum number of pages to return"), mcp.DefaultNumber(50)),
+	mcp.WithBoolean("pretty_names", mcp.Description("Include human-readable display names (slower)"), mcp.DefaultBool(false)),
 )
 
 func (t *tools) handleListSpaces(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -305,4 +362,82 @@ func (t *tools) handleListAttachments(ctx context.Context, request mcp.CallToolR
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(prettyJSON(attachments)), nil
+}
+
+func (t *tools) handleListTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	tags, err := c.ListTags(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(prettyJSON(tags)), nil
+}
+
+func (t *tools) handleSetPageTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page := strParam(args, "space"), strParam(args, "page")
+	if space == "" || page == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page"), nil
+	}
+	tags := dedupStrings(strSliceParam(args, "tags"))
+	mode := strParam(args, "mode")
+	if mode == "" {
+		mode = "replace"
+	}
+	switch mode {
+	case "replace", "add":
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("invalid mode %q: expected 'replace' or 'add'", mode)), nil
+	}
+	minorRevision := false
+	if v, ok := args["minor_revision"].(bool); ok {
+		minorRevision = v
+	}
+	if mode == "add" && len(tags) > 0 {
+		existing, err := c.GetPageTags(ctx, space, page)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		for _, t := range existing {
+			tags = append(tags, t.Name)
+		}
+		tags = dedupStrings(tags)
+	}
+	result, err := c.SetPageTags(ctx, space, page, tags, minorRevision)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	msg := fmt.Sprintf("Tags assigned to %s/%s: %s (%s)", space, page, strings.Join(tags, ", "), result.Status)
+	if result.Location != "" {
+		msg += "\nLocation: " + result.Location
+	}
+	return mcp.NewToolResultText(msg), nil
+}
+
+func (t *tools) handleGetPagesByTag(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	tags := strSliceParam(args, "tags")
+	if len(tags) == 0 {
+		return mcp.NewToolResultError("missing required parameter: tags"), nil
+	}
+	prettyNames := false
+	if v, ok := args["pretty_names"].(bool); ok {
+		prettyNames = v
+	}
+	pages, err := c.GetPagesByTag(ctx, tags, int(nonNegative(intParam(args, "start", 0))), int(nonNegative(intParam(args, "number", 50))), prettyNames)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(prettyJSON(pages)), nil
 }

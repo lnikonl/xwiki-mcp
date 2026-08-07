@@ -84,12 +84,20 @@ func pagePath(space, page string) string {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
-	var reader io.Reader
+	var data []byte
 	if body != nil {
-		data, err := json.Marshal(body)
+		var err error
+		data, err = json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("encode request body: %w", err)
 		}
+	}
+	return c.doRaw(ctx, method, path, "application/json", data)
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path, contentType string, data []byte) (*http.Response, error) {
+	var reader io.Reader
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+"/"+strings.TrimLeft(path, "/"), reader)
@@ -100,8 +108,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	if c.Token != "" {
 		req.Header.Set(HeaderAuthorization, "Bearer "+c.Token)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if data != nil {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -201,4 +209,59 @@ func (c *Client) ListAttachments(ctx context.Context, space, page string, start,
 	err := c.decode(ctx, http.MethodGet,
 		fmt.Sprintf("%s/attachments?start=%d&number=%d", pagePath(space, page), start, number), &out)
 	return out.Attachments, err
+}
+
+type Tag struct {
+	Name string `json:"name"`
+}
+
+func (c *Client) ListTags(ctx context.Context) ([]Tag, error) {
+	var out struct {
+		Tags []Tag `json:"tags"`
+	}
+	err := c.decode(ctx, http.MethodGet, "/tags", &out)
+	return out.Tags, err
+}
+
+func (c *Client) GetPageTags(ctx context.Context, space, page string) ([]Tag, error) {
+	var out struct {
+		Tags []Tag `json:"tags"`
+	}
+	err := c.decode(ctx, http.MethodGet, pagePath(space, page)+"/tags", &out)
+	return out.Tags, err
+}
+
+func (c *Client) SetPageTags(ctx context.Context, space, page string, tags []string, minorRevision bool) (*SaveResult, error) {
+	path := pagePath(space, page) + "/tags"
+	if minorRevision {
+		path += "?minorRevision=true"
+	}
+	form := url.Values{}
+	for _, tag := range tags {
+		form.Add("tag", tag)
+	}
+	resp, err := c.doRaw(ctx, http.MethodPut, path, "application/x-www-form-urlencoded", []byte(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return &SaveResult{
+		Status:   resp.Status,
+		Location: resp.Header.Get("Location"),
+	}, nil
+}
+
+func (c *Client) GetPagesByTag(ctx context.Context, tags []string, start, number int, prettyNames bool) ([]PageSummary, error) {
+	escaped := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		escaped = append(escaped, url.PathEscape(tag))
+	}
+	path := fmt.Sprintf("/tags/%s?start=%d&number=%d&prettyNames=%t",
+		strings.Join(escaped, ","), start, number, prettyNames)
+	var out struct {
+		PageSummaries []PageSummary `json:"pageSummaries"`
+	}
+	err := c.decode(ctx, http.MethodGet, path, &out)
+	return out.PageSummaries, err
 }
