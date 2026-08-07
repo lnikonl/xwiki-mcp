@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,16 +32,26 @@ func (t *tools) Register(mcpServer *server.MCPServer) {
 		{Tool: toolListSpaces, Handler: t.handleListSpaces},
 		{Tool: toolListPages, Handler: t.handleListPages},
 		{Tool: toolGetPage, Handler: t.handleGetPage},
+		{Tool: toolGetPageVersion, Handler: t.handleGetPageVersion},
+		{Tool: toolListPageChildren, Handler: t.handleListPageChildren},
 		{Tool: toolSavePage, Handler: t.handleSavePage},
 		{Tool: toolSearchPages, Handler: t.handleSearchPages},
 		{Tool: toolGetPageHistory, Handler: t.handleGetPageHistory},
 		{Tool: toolListAttachments, Handler: t.handleListAttachments},
+		{Tool: toolUploadAttachment, Handler: t.handleUploadAttachment},
+		{Tool: toolDownloadAttachment, Handler: t.handleDownloadAttachment},
+		{Tool: toolListComments, Handler: t.handleListComments},
+		{Tool: toolAddComment, Handler: t.handleAddComment},
+		{Tool: toolGetModifications, Handler: t.handleGetModifications},
 		{Tool: toolListTags, Handler: t.handleListTags},
 		{Tool: toolSetPageTags, Handler: t.handleSetPageTags},
 		{Tool: toolGetPagesByTag, Handler: t.handleGetPagesByTag},
 	}
 	if t.cfg.AllowDelete {
-		reg = append(reg, server.ServerTool{Tool: toolDeletePage, Handler: t.handleDeletePage})
+		reg = append(reg,
+			server.ServerTool{Tool: toolDeletePage, Handler: t.handleDeletePage},
+			server.ServerTool{Tool: toolDeleteAttachment, Handler: t.handleDeleteAttachment},
+		)
 	}
 	mcpServer.AddTools(reg...)
 }
@@ -154,6 +165,23 @@ var toolGetPage = mcp.NewTool("get_page",
 	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
 )
 
+var toolGetPageVersion = mcp.NewTool("get_page_version",
+	mcp.WithDescription("Get the metadata and content of a specific page version (revision), e.g. '2.1'."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithString("version", mcp.Required(), mcp.Description("Page revision to return, e.g. '2.1'")),
+)
+
+var toolListPageChildren = mcp.NewTool("list_page_children",
+	mcp.WithDescription("List child pages of a page. Use hierarchy 'nestedpages' to match the XWiki UI hierarchy, 'parentchild' (default) for the legacy one."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
+	mcp.WithNumber("number", mcp.Description("Maximum number of children to return"), mcp.DefaultNumber(50)),
+	mcp.WithString("hierarchy", mcp.Description("'parentchild' (default) or 'nestedpages'")),
+	mcp.WithString("search", mcp.Description("Filter children by name or title")),
+)
+
 var toolSavePage = mcp.NewTool("save_page",
 	mcp.WithDescription("Create or update a page (PUT, idempotent). Creates the page if it does not exist, updates it otherwise. Content uses XWiki 2.1 wiki syntax."),
 	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
@@ -191,6 +219,53 @@ var toolListAttachments = mcp.NewTool("list_attachments",
 	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
 	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
 	mcp.WithNumber("number", mcp.Description("Maximum number of attachments to return"), mcp.DefaultNumber(50)),
+)
+
+var toolUploadAttachment = mcp.NewTool("upload_attachment",
+	mcp.WithDescription("Upload a file as an attachment to a page (PUT, creates or updates). Content must be base64-encoded."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithString("filename", mcp.Required(), mcp.Description("File name of the attachment, e.g. 'image.png'")),
+	mcp.WithString("content_base64", mcp.Required(), mcp.Description("File content encoded as base64")),
+)
+
+var toolDownloadAttachment = mcp.NewTool("download_attachment",
+	mcp.WithDescription("Download an attachment of a page. Images are returned as rendered image content; other files are returned base64-encoded in text."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithString("filename", mcp.Required(), mcp.Description("File name of the attachment to download, e.g. 'image.png'")),
+)
+
+var toolDeleteAttachment = mcp.NewTool("delete_attachment",
+	mcp.WithDescription("Delete an attachment of a page. Available only when the server was started with --allow-delete."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithString("filename", mcp.Required(), mcp.Description("File name of the attachment to delete")),
+)
+
+var toolListComments = mcp.NewTool("list_comments",
+	mcp.WithDescription("List comments of a page (id, author, date, text, highlight, replyTo)."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
+	mcp.WithNumber("number", mcp.Description("Maximum number of comments to return; -1 means no limit"), mcp.DefaultNumber(-1)),
+)
+
+var toolAddComment = mcp.NewTool("add_comment",
+	mcp.WithDescription("Add a comment to a page. The author is set server-side to the current user."),
+	mcp.WithString("space", mcp.Required(), mcp.Description("Space path, e.g. 'Main' or 'Manuals/ansible'")),
+	mcp.WithString("page", mcp.Required(), mcp.Description("Page name, e.g. 'WebHome'")),
+	mcp.WithString("text", mcp.Required(), mcp.Description("Comment text (XWiki syntax)")),
+	mcp.WithString("highlight", mcp.Description("Optional highlighted text of the page the comment refers to")),
+	mcp.WithNumber("reply_to", mcp.Description("Optional id of the comment being replied to")),
+)
+
+var toolGetModifications = mcp.NewTool("get_modifications",
+	mcp.WithDescription("List the latest modifications (individual document versions) made in the wiki, ordered by modification date. Use to see what changed recently."),
+	mcp.WithNumber("start", mcp.Description("Pagination offset"), mcp.DefaultNumber(0)),
+	mcp.WithNumber("number", mcp.Description("Maximum number of modifications to return"), mcp.DefaultNumber(25)),
+	mcp.WithString("order", mcp.Description("'desc' (most recent first, default) or 'asc'"), mcp.DefaultString("desc")),
+	mcp.WithNumber("date", mcp.Description("Only modifications made after this instant, milliseconds since epoch (optional)")),
 )
 
 var toolListTags = mcp.NewTool("list_tags",
@@ -259,6 +334,42 @@ func (t *tools) handleGetPage(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(prettyJSON(p)), nil
+}
+
+func (t *tools) handleGetPageVersion(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page, version := strParam(args, "space"), strParam(args, "page"), strParam(args, "version")
+	if space == "" || page == "" || version == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page, version"), nil
+	}
+	p, err := c.GetPageVersion(ctx, space, page, version)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(prettyJSON(p)), nil
+}
+
+func (t *tools) handleListPageChildren(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page := strParam(args, "space"), strParam(args, "page")
+	if space == "" || page == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page"), nil
+	}
+	children, err := c.ListPageChildren(ctx, space, page,
+		int(nonNegative(intParam(args, "start", 0))), int(nonNegative(intParam(args, "number", 50))),
+		strParam(args, "hierarchy"), strParam(args, "search"))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(prettyJSON(children)), nil
 }
 
 func (t *tools) handleSavePage(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -362,6 +473,137 @@ func (t *tools) handleListAttachments(ctx context.Context, request mcp.CallToolR
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(prettyJSON(attachments)), nil
+}
+
+func (t *tools) handleUploadAttachment(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page, name := strParam(args, "space"), strParam(args, "page"), strParam(args, "filename")
+	if space == "" || page == "" || name == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page, filename"), nil
+	}
+	content, ok := args["content_base64"].(string)
+	if !ok {
+		return mcp.NewToolResultError("missing required parameter: content_base64"), nil
+	}
+	data, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid base64 content: %v", err)), nil
+	}
+	result, err := c.UploadAttachment(ctx, space, page, name, data)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	msg := fmt.Sprintf("Attachment %s uploaded to %s/%s: %s (%d bytes)", name, space, page, result.Status, len(data))
+	if result.Location != "" {
+		msg += "\nLocation: " + result.Location
+	}
+	return mcp.NewToolResultText(msg), nil
+}
+
+func (t *tools) handleDownloadAttachment(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page, name := strParam(args, "space"), strParam(args, "page"), strParam(args, "filename")
+	if space == "" || page == "" || name == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page, filename"), nil
+	}
+	data, mimeType, err := c.DownloadAttachment(ctx, space, page, name)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	mimeType = strings.TrimSpace(strings.Split(mimeType, ";")[0])
+	caption := fmt.Sprintf("Attachment %s from %s/%s: %d bytes, %s", name, space, page, len(data), mimeType)
+	if strings.HasPrefix(mimeType, "image/") {
+		return mcp.NewToolResultImage(caption, base64.StdEncoding.EncodeToString(data), mimeType), nil
+	}
+	return mcp.NewToolResultText(caption + "\nContent (base64):\n" + base64.StdEncoding.EncodeToString(data)), nil
+}
+
+func (t *tools) handleDeleteAttachment(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page, name := strParam(args, "space"), strParam(args, "page"), strParam(args, "filename")
+	if space == "" || page == "" || name == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page, filename"), nil
+	}
+	if err := c.DeleteAttachment(ctx, space, page, name); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Attachment %s deleted from %s/%s", name, space, page)), nil
+}
+
+func (t *tools) handleListComments(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page := strParam(args, "space"), strParam(args, "page")
+	if space == "" || page == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page"), nil
+	}
+	comments, err := c.ListComments(ctx, space, page,
+		int(nonNegative(intParam(args, "start", 0))), int(intParam(args, "number", -1)))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(prettyJSON(comments)), nil
+}
+
+func (t *tools) handleAddComment(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	space, page := strParam(args, "space"), strParam(args, "page")
+	text := strParam(args, "text")
+	if space == "" || page == "" || text == "" {
+		return mcp.NewToolResultError("missing required parameters: space, page, text"), nil
+	}
+	var replyTo *int
+	if v := intParam(args, "reply_to", -1); v >= 0 {
+		n := int(v)
+		replyTo = &n
+	}
+	result, err := c.AddComment(ctx, space, page, text, strParam(args, "highlight"), replyTo)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	msg := fmt.Sprintf("Comment added to %s/%s: %s", space, page, result.Status)
+	if result.Location != "" {
+		msg += "\nLocation: " + result.Location
+	}
+	return mcp.NewToolResultText(msg), nil
+}
+
+func (t *tools) handleGetModifications(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, err := t.client(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	args := request.GetArguments()
+	order := strParam(args, "order")
+	if order == "" {
+		order = "desc"
+	}
+	mods, err := c.GetModifications(ctx,
+		int(nonNegative(intParam(args, "start", 0))), int(nonNegative(intParam(args, "number", 25))),
+		order, int64(intParam(args, "date", 0)))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(prettyJSON(mods)), nil
 }
 
 func (t *tools) handleListTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

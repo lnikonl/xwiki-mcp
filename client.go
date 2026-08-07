@@ -265,3 +265,113 @@ func (c *Client) GetPagesByTag(ctx context.Context, tags []string, start, number
 	err := c.decode(ctx, http.MethodGet, path, &out)
 	return out.PageSummaries, err
 }
+
+func (c *Client) ListPageChildren(ctx context.Context, space, page string, start, number int, hierarchy, search string) ([]PageSummary, error) {
+	path := fmt.Sprintf("%s/children?start=%d&number=%d", pagePath(space, page), start, number)
+	if hierarchy != "" {
+		path += "&hierarchy=" + url.QueryEscape(hierarchy)
+	}
+	if search != "" {
+		path += "&search=" + url.QueryEscape(search)
+	}
+	var out struct {
+		PageSummaries []PageSummary `json:"pageSummaries"`
+	}
+	err := c.decode(ctx, http.MethodGet, path, &out)
+	return out.PageSummaries, err
+}
+
+func (c *Client) GetPageVersion(ctx context.Context, space, page, version string) (*Page, error) {
+	var out Page
+	err := c.decode(ctx, http.MethodGet, pagePath(space, page)+"/history/"+url.PathEscape(version), &out)
+	return &out, err
+}
+
+func (c *Client) ListComments(ctx context.Context, space, page string, start, number int) ([]map[string]any, error) {
+	var out struct {
+		Comments []map[string]any `json:"comments"`
+	}
+	err := c.decode(ctx, http.MethodGet,
+		fmt.Sprintf("%s/comments?start=%d&number=%d", pagePath(space, page), start, number), &out)
+	return out.Comments, err
+}
+
+func (c *Client) AddComment(ctx context.Context, space, page string, text, highlight string, replyTo *int) (*SaveResult, error) {
+	body := map[string]any{"text": text}
+	if highlight != "" {
+		body["highlight"] = highlight
+	}
+	if replyTo != nil {
+		body["replyTo"] = *replyTo
+	}
+	resp, err := c.do(ctx, http.MethodPost, pagePath(space, page)+"/comments", body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return &SaveResult{
+		Status:   resp.Status,
+		Location: resp.Header.Get("Location"),
+	}, nil
+}
+
+func (c *Client) GetModifications(ctx context.Context, start, number int, order string, dateMs int64) ([]map[string]any, error) {
+	path := fmt.Sprintf("/modifications?start=%d&number=%d&order=%s&date=%d", start, number, url.QueryEscape(order), dateMs)
+	var out struct {
+		PageVersions []map[string]any `json:"pageVersions"`
+	}
+	err := c.decode(ctx, http.MethodGet, path, &out)
+	return out.PageVersions, err
+}
+
+func (c *Client) UploadAttachment(ctx context.Context, space, page, name string, data []byte) (*SaveResult, error) {
+	resp, err := c.doRaw(ctx, http.MethodPut,
+		pagePath(space, page)+"/attachments/"+url.PathEscape(name), "application/octet-stream", data)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return &SaveResult{
+		Status:   resp.Status,
+		Location: resp.Header.Get("Location"),
+	}, nil
+}
+
+func (c *Client) DeleteAttachment(ctx context.Context, space, page, name string) error {
+	resp, err := c.doRaw(ctx, http.MethodDelete,
+		pagePath(space, page)+"/attachments/"+url.PathEscape(name), "", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+func (c *Client) DownloadAttachment(ctx context.Context, space, page, name string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.BaseURL+"/"+strings.TrimLeft(pagePath(space, page)+"/attachments/"+url.PathEscape(name), "/"), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Accept", "*/*")
+	if c.Token != "" {
+		req.Header.Set(HeaderAuthorization, "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, "", fmt.Errorf("xwiki GET %s failed: %s: %s", req.URL.Path, resp.Status, strings.TrimSpace(string(b)))
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, resp.Header.Get("Content-Type"), nil
+}

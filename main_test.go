@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,13 +20,20 @@ import (
 )
 
 type fakeXWiki struct {
-	mu        sync.Mutex
-	auths     []string
-	paths     []string
-	putBodies []map[string]any
-	deleted   []string
-	tagForm   []string
-	tags      []string
+	mu         sync.Mutex
+	auths      []string
+	paths      []string
+	putBodies  []map[string]any
+	postBodies []map[string]any
+	deleted    []string
+	tagForm    []string
+	tags       []string
+	uploaded   []fakeUpload
+}
+
+type fakeUpload struct {
+	name string
+	data []byte
 }
 
 func (f *fakeXWiki) handler() http.Handler {
@@ -66,6 +75,13 @@ func (f *fakeXWiki) handler() http.Handler {
 			return
 		}
 
+		if r.URL.Path == "/modifications" {
+			writeJSON(map[string]any{"pageVersions": []map[string]any{
+				{"id": "xwiki:Main.WebHome", "fullName": "Main.WebHome", "version": "1.2", "author": "XWiki.bot", "date": "2026-01-01T10:00:00Z", "comment": "edit"},
+			}})
+			return
+		}
+
 		segs := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		i := 0
 		var spaceParts []string
@@ -100,10 +116,24 @@ func (f *fakeXWiki) handler() http.Handler {
 					writeJSON(map[string]any{"pageSummaries": []map[string]any{
 						{"id": "xwiki:" + space + ".WebHome", "fullName": space + ".WebHome", "name": "WebHome", "title": "Home", "version": "1.1", "author": "XWiki.bot"},
 					}})
+				case len(rest) == 4 && rest[2] == "history":
+					writeJSON(map[string]any{
+						"id": "xwiki:" + fullName, "fullName": fullName, "space": space, "name": pageName,
+						"title": "Home", "version": rest[3], "author": "XWiki.bot",
+						"content": "= Old content =", "syntax": "xwiki/2.1",
+					})
 				case suffix == "history":
 					writeJSON(map[string]any{"pageVersions": []map[string]any{
 						{"version": "1.2", "author": "XWiki.bot", "date": "2026-01-01", "comment": "edit"},
 					}})
+				case len(rest) == 4 && rest[2] == "attachments":
+					if strings.HasSuffix(rest[3], ".png") {
+						w.Header().Set("Content-Type", "image/png")
+						w.Write([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
+						return
+					}
+					w.Header().Set("Content-Type", "text/plain")
+					w.Write([]byte("hello attachment"))
 				case suffix == "attachments":
 					writeJSON(map[string]any{"attachments": []map[string]any{
 						{"id": fullName + "@img.png", "name": "img.png", "size": 1024, "version": "1.0", "author": "XWiki.bot", "date": "2026-01-01"},
@@ -112,6 +142,14 @@ func (f *fakeXWiki) handler() http.Handler {
 					writeJSON(map[string]any{"tags": []map[string]any{
 						{"name": "ansible"},
 						{"name": "linux"},
+					}})
+				case suffix == "children":
+					writeJSON(map[string]any{"pageSummaries": []map[string]any{
+						{"id": "xwiki:" + space + ".Child1", "fullName": space + ".Child1", "name": "Child1", "title": "Child 1", "version": "1.0"},
+					}})
+				case suffix == "comments":
+					writeJSON(map[string]any{"comments": []map[string]any{
+						{"id": 0, "author": "XWiki.bot", "authorName": "Bot", "date": "2026-01-01T10:00:00Z", "text": "Nice page"},
 					}})
 				default:
 					writeJSON(map[string]any{
@@ -132,6 +170,14 @@ func (f *fakeXWiki) handler() http.Handler {
 					w.WriteHeader(http.StatusAccepted)
 					return
 				}
+				if len(rest) == 4 && rest[2] == "attachments" {
+					data, _ := io.ReadAll(r.Body)
+					f.mu.Lock()
+					f.uploaded = append(f.uploaded, fakeUpload{name: rest[3], data: data})
+					f.mu.Unlock()
+					w.WriteHeader(http.StatusCreated)
+					return
+				}
 				var body map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t := http.StatusBadRequest
@@ -143,7 +189,29 @@ func (f *fakeXWiki) handler() http.Handler {
 				f.mu.Unlock()
 				w.Header().Set("Location", "/rest/wikis/xwiki/spaces/"+strings.Join(spaceParts, "/")+"/pages/"+pageName)
 				w.WriteHeader(http.StatusCreated)
+			case http.MethodPost:
+				if suffix == "comments" {
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					f.mu.Lock()
+					f.postBodies = append(f.postBodies, body)
+					f.mu.Unlock()
+					w.Header().Set("Location", "/rest/wikis/xwiki/spaces/"+strings.Join(spaceParts, "/")+"/pages/"+pageName+"/comments/0")
+					w.WriteHeader(http.StatusCreated)
+					return
+				}
+				http.Error(w, "unexpected POST", http.StatusBadRequest)
 			case http.MethodDelete:
+				if len(rest) == 4 && rest[2] == "attachments" {
+					f.mu.Lock()
+					f.deleted = append(f.deleted, fullName+"@"+rest[3])
+					f.mu.Unlock()
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
 				f.mu.Lock()
 				f.deleted = append(f.deleted, fullName)
 				f.mu.Unlock()
@@ -459,6 +527,171 @@ func TestSetPageTagsInvalidMode(t *testing.T) {
 	}
 	if !res.IsError || !strings.Contains(textContent(res), "invalid mode") {
 		t.Fatalf("expected invalid mode error, got: %s", textContent(res))
+	}
+}
+
+func TestGetPageVersion(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "get_page_version", map[string]any{"space": "Main", "page": "WebHome", "version": "1.1"})
+	if !strings.Contains(out, "Old content") || !strings.Contains(out, "\"version\": \"1.1\"") {
+		t.Fatalf("expected old version content, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/spaces/Main/pages/WebHome/history/1.1" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestListPageChildren(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "list_page_children", map[string]any{
+		"space": "Main", "page": "WebHome", "hierarchy": "nestedpages", "search": "child",
+	})
+	if !strings.Contains(out, "Child1") {
+		t.Fatalf("expected children, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/spaces/Main/pages/WebHome/children?start=0&number=50&hierarchy=nestedpages&search=child" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestListCommentsAndAddComment(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "list_comments", map[string]any{"space": "Main", "page": "WebHome"})
+	if !strings.Contains(out, "Nice page") {
+		t.Fatalf("expected comments, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/spaces/Main/pages/WebHome/comments?start=0&number=-1" {
+		t.Fatalf("unexpected path %q", got)
+	}
+	out = callTool(t, env.client, "add_comment", map[string]any{
+		"space": "Main", "page": "WebHome", "text": "My comment", "reply_to": 0,
+	})
+	if !strings.Contains(out, "added") {
+		t.Fatalf("unexpected result: %s", out)
+	}
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	if len(env.xwiki.postBodies) != 1 {
+		t.Fatalf("expected one POST, got %d", len(env.xwiki.postBodies))
+	}
+	body := env.xwiki.postBodies[0]
+	if body["text"] != "My comment" || body["replyTo"] != float64(0) {
+		t.Fatalf("unexpected comment body: %v", body)
+	}
+}
+
+func TestGetModifications(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "get_modifications", map[string]any{"number": 10, "order": "asc", "date": 1704067200000})
+	if !strings.Contains(out, "Main.WebHome") {
+		t.Fatalf("expected modifications, got: %s", out)
+	}
+	if got := env.xwiki.lastPath(); got != "/modifications?start=0&number=10&order=asc&date=1704067200000" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestUploadAttachment(t *testing.T) {
+	env := setup(t)
+	content := base64.StdEncoding.EncodeToString([]byte("hello attachment"))
+	out := callTool(t, env.client, "upload_attachment", map[string]any{
+		"space": "Main", "page": "WebHome", "filename": "note.txt", "content_base64": content,
+	})
+	if !strings.Contains(out, "note.txt") || !strings.Contains(out, "16 bytes") {
+		t.Fatalf("unexpected result: %s", out)
+	}
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	if len(env.xwiki.uploaded) != 1 || env.xwiki.uploaded[0].name != "note.txt" || string(env.xwiki.uploaded[0].data) != "hello attachment" {
+		t.Fatalf("unexpected upload: %+v", env.xwiki.uploaded)
+	}
+}
+
+func TestUploadAttachmentInvalidBase64(t *testing.T) {
+	env := setup(t)
+	res, err := env.client.CallTool(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "upload_attachment", Arguments: map[string]any{
+			"space": "Main", "page": "WebHome", "filename": "note.txt", "content_base64": "!!!not-base64!!!",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.IsError || !strings.Contains(textContent(res), "invalid base64") {
+		t.Fatalf("expected base64 error, got: %s", textContent(res))
+	}
+}
+
+func TestDownloadAttachmentImage(t *testing.T) {
+	env := setup(t)
+	res, err := env.client.CallTool(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "download_attachment", Arguments: map[string]any{
+			"space": "Main", "page": "WebHome", "filename": "img.png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(res))
+	}
+	if len(res.Content) != 2 {
+		t.Fatalf("expected text + image content, got %d items", len(res.Content))
+	}
+	img, ok := res.Content[1].(mcp.ImageContent)
+	if !ok {
+		t.Fatalf("expected ImageContent, got %T", res.Content[1])
+	}
+	if img.MIMEType != "image/png" {
+		t.Fatalf("expected mime image/png, got %q", img.MIMEType)
+	}
+	data, err := base64.StdEncoding.DecodeString(img.Data)
+	if err != nil || len(data) != 8 {
+		t.Fatalf("unexpected image data: %v, %v", len(data), err)
+	}
+	if !strings.Contains(textContent(res), "8 bytes") {
+		t.Fatalf("unexpected caption: %s", textContent(res))
+	}
+	if got := env.xwiki.lastPath(); got != "/spaces/Main/pages/WebHome/attachments/img.png" {
+		t.Fatalf("unexpected path %q", got)
+	}
+}
+
+func TestDownloadAttachmentTextFile(t *testing.T) {
+	env := setup(t)
+	out := callTool(t, env.client, "download_attachment", map[string]any{
+		"space": "Main", "page": "WebHome", "filename": "note.txt",
+	})
+	if !strings.Contains(out, "aGVsbG8gYXR0YWNobWVudA==") {
+		t.Fatalf("expected base64 content, got: %s", out)
+	}
+	if !strings.Contains(out, "text/plain") {
+		t.Fatalf("expected mime in caption, got: %s", out)
+	}
+}
+
+func TestDeleteAttachmentEnabled(t *testing.T) {
+	env := setup(t, func(c *ToolConfig) { c.AllowDelete = true })
+	callTool(t, env.client, "delete_attachment", map[string]any{
+		"space": "Main", "page": "WebHome", "filename": "img.png",
+	})
+	env.xwiki.mu.Lock()
+	defer env.xwiki.mu.Unlock()
+	if len(env.xwiki.deleted) != 1 || env.xwiki.deleted[0] != "Main.WebHome@img.png" {
+		t.Fatalf("expected attachment deleted, got %v", env.xwiki.deleted)
+	}
+}
+
+func TestDeleteAttachmentDisabledByDefault(t *testing.T) {
+	env := setup(t)
+	res, err := env.client.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "delete_attachment" {
+			t.Fatalf("delete_attachment should not be registered without --allow-delete")
+		}
 	}
 }
 

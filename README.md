@@ -35,11 +35,17 @@ go build -o xwiki-mcp .
 - `list_spaces` — list all (nested) spaces
 - `list_pages` — list pages in a space; nested spaces as `Manuals/ansible` or `Manuals.ansible`
 - `get_page` — read page (title, content, version, author, syntax)
+- `get_page_version` — read a specific page revision, e.g. `2.1`
+- `list_page_children` — child pages of a page
 - `save_page` — create/update page (PUT, idempotent; content in XWiki 2.1 syntax)
 - `search_pages` — full-text search
 - `get_page_history` — page versions
 - `list_attachments` — page attachments
+- `upload_attachment` — upload a base64-encoded file (images included) as a page attachment
+- `download_attachment` — download an attachment; images are returned as rendered image content, other files as base64 text
+- `list_comments` / `add_comment` — page comments (author set server-side)
+- `get_modifications` — latest wiki modifications (recent changes)
 - `list_tags` — all tags defined in the wiki
 - `set_page_tags` — assign tags to a page (mode `replace`/`add`; replaces or merges the tag set)
 - `get_pages_by_tag` — pages tagged with any of the given tags
-- `delete_page` — only when `-allow-delete` is set
+- `delete_page`, `delete_attachment` — only when `-allow-delete` is set
