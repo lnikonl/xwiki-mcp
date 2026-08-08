@@ -71,7 +71,6 @@ services:
         "Authorization": "Bearer xwiki:XWiki.bot-opencode^XWiki.OIDC.ConsentClass[0]/<SECRET>"
       }
     }
-  }
 }
 ```
 
