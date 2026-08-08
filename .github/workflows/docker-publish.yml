@@ -65,6 +65,8 @@ jobs:
           labels: |
             org.opencontainers.image.title=xwiki-mcp
             org.opencontainers.image.description=MCP server that exposes an XWiki instance over HTTP (Streamable HTTP transport).
+            org.opencontainers.image.url=https://hub.docker.com/r/lnikonl/xwiki-mcp
+            org.opencontainers.image.source=https://github.com/lnikonl/xwiki-mcp
             org.opencontainers.image.licenses=Apache-2.0
 
       - name: Build and push Docker image
