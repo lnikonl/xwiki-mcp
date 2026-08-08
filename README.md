@@ -4,6 +4,12 @@ MCP server (Go, [mcp-go](https://github.com/mark3labs/mcp-go) v0.55.0) that expo
 
 Flow: LLM sends its XWiki user token in the HTTP header -> xwiki-mcp authenticates to XWiki REST API on behalf of the user -> XWiki.
 
+## Links
+
+- **Source Code**: [https://github.com/lnikonl/xwiki-mcp](https://github.com/lnikonl/xwiki-mcp)
+- **Issues**: [https://github.com/lnikonl/xwiki-mcp/issues](https://github.com/lnikonl/xwiki-mcp/issues)
+- **Docker Hub**: [https://hub.docker.com/r/lnikonl/xwiki-mcp](https://hub.docker.com/r/lnikonl/xwiki-mcp)
+
 ## Authentication
 
 The client sends its token on every request in one of:
