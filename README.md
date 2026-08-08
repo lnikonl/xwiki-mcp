@@ -75,24 +75,27 @@ services:
 }
 ```
 
+
 ### prompt
 
 <figcaption>Prompt for LLM</figcaption>
+
 <a href="doc/opencode-1.png">
   <img src="doc/opencode-1.png" alt="OpenCode 1" width="400">
 </a>
 
 <figcaption>Working</figcaption>
+
 <a href="doc/opencode-2.png">
   <img src="doc/opencode-2.png" alt="OpenCode 2" width="400">
 </a>
 
 ### result on xwiki
 
-<figcaption>Result</figcaption>
 <a href="doc/xwiki-1.png">
   <img src="doc/xwiki-1.png" alt="XWiki 1" width="400">
 </a>
+
 
 ## Tools
 
