@@ -78,13 +78,9 @@ services:
 
 ### prompt
 
-<figcaption>Prompt for LLM</figcaption>
-
 <a href="doc/opencode-1.png">
   <img src="doc/opencode-1.png" alt="OpenCode 1" width="400">
 </a>
-
-<figcaption>Working</figcaption>
 
 <a href="doc/opencode-2.png">
   <img src="doc/opencode-2.png" alt="OpenCode 2" width="400">
