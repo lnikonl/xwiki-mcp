@@ -1,0 +1,15 @@
+services:
+  xwiki-mcp:
+    image: lnikonl/xwiki-mcp
+    container_name: xwiki-mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      XWIKI_BASE_URL: https://xwiki.example.com/rest/wikis/xwiki
+      XWIKI_MCP_ADDR: :8080
+      # Default token used when the client sends no X-XWiki-Token / Authorization header
+      XWIKI_TOKEN: xwiki:XWiki.bot^XWiki.OIDC.ConsentClass[0]/<secret>
+      # Enable the delete_page tool (off by default)
+      XWIKI_MCP_ALLOW_DELETE: "false"
+      XWIKI_MCP_TIMEOUT: 60s
