@@ -30,6 +30,64 @@ go build -o xwiki-mcp .
 ./xwiki-mcp -addr :8080 -xwiki-url https://xwiki.example.com/rest/wikis/xwiki
 ```
 
+### docker-compose
+
+```yaml
+services:
+  xwiki-mcp:
+    image: lnikonl/xwiki-mcp
+    container_name: xwiki-mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      XWIKI_BASE_URL: https://xwiki.example.com/rest/wikis/xwiki
+      XWIKI_MCP_ADDR: :8080
+      # Default token used when the client sends no X-XWiki-Token / Authorization header
+      XWIKI_TOKEN: xwiki:XWiki.bot^XWiki.OIDC.ConsentClass[0]/<secret>
+      # Enable the delete_page tool (off by default)
+      XWIKI_MCP_ALLOW_DELETE: "false"
+      XWIKI_MCP_TIMEOUT: 60s
+```
+
+### opencode example
+
+~/.config/opencode/opencode.jsonc
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+    "xwiki-mcp": {
+      "type": "remote",
+      "url": "http://docker-host-ip:8080/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer xwiki:XWiki.bot-opencode^XWiki.OIDC.ConsentClass[0]/<SECRET>"
+      }
+    }
+  }
+}
+```
+
+### prompt
+
+<figcaption>Prompt for LLM</figcaption>
+<a href="doc/opencode-1.png">
+  <img src="doc/opencode-1.png" alt="OpenCode 1" width="400">
+</a>
+
+<figcaption>Working</figcaption>
+<a href="doc/opencode-2.png">
+  <img src="doc/opencode-2.png" alt="OpenCode 2" width="400">
+</a>
+
+### result on xwiki
+
+<figcaption>Result</figcaption>
+<a href="doc/xwiki-1.png">
+  <img src="doc/xwiki-1.png" alt="XWiki 1" width="400">
+</a>
+
 ## Tools
 
 - `list_spaces` — list all (nested) spaces
