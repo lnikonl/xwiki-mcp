@@ -63,6 +63,7 @@ services:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
+  "mcp": {
     "xwiki-mcp": {
       "type": "remote",
       "url": "http://docker-host-ip:8080/mcp",
@@ -71,6 +72,7 @@ services:
         "Authorization": "Bearer xwiki:XWiki.bot-opencode^XWiki.OIDC.ConsentClass[0]/<SECRET>"
       }
     }
+  }
 }
 ```
 
