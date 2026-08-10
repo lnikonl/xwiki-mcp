@@ -29,13 +29,6 @@ If neither is present, the default token configured at startup (`--token` / `XWI
 | `-allow-delete` | `XWIKI_MCP_ALLOW_DELETE` | `false`           | Register the `delete_page` tool                      |
 | `-timeout`      | `XWIKI_MCP_TIMEOUT`    | `60s`               | XWiki HTTP request timeout                           |
 
-## Run
-
-```bash
-go build -o xwiki-mcp .
-./xwiki-mcp -addr :8080 -xwiki-url https://xwiki.example.com/rest/wikis/xwiki
-```
-
 ### docker-compose
 
 ```yaml
@@ -54,6 +47,43 @@ services:
       # Enable the delete_page tool (off by default)
       XWIKI_MCP_ALLOW_DELETE: "false"
       XWIKI_MCP_TIMEOUT: 60s
+```
+
+## Download binaries
+
+Pre-built binaries for Linux, macOS and Windows are published on the
+[Releases page](https://github.com/lnikonl/xwiki-mcp/releases). The links
+below always point to the **latest** release — no version lookup needed.
+
+| OS / Arch | Asset |
+| --- | --- |
+| Linux x86_64 | `xwiki-mcp_linux_amd64.tar.gz` |
+| Linux arm64 | `xwiki-mcp_linux_arm64.tar.gz` |
+| macOS Intel | `xwiki-mcp_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `xwiki-mcp_darwin_arm64.tar.gz` |
+| Windows x86_64 | `xwiki-mcp_windows_amd64.zip` |
+
+Each archive contains the binary, `LICENSE` and `README.md`. A `SHA256SUMS`
+file with checksums is attached to every release.
+
+### Linux / macOS
+
+```bash
+OS=linux        # linux | darwin
+ARCH=amd64      # amd64 | arm64
+
+curl -fL -o xwiki-mcp.tar.gz \
+  "https://github.com/lnikonl/xwiki-mcp/releases/latest/download/xwiki-mcp_${OS}_${ARCH}.tar.gz"
+tar -xzf xwiki-mcp.tar.gz
+cd xwiki-mcp
+```
+
+### Run
+
+```bash
+./xwiki-mcp \
+  -addr :8080 \
+  -xwiki-url https://xwiki.example.com/rest/wikis/xwiki
 ```
 
 ### opencode example

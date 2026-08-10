@@ -12,7 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const version = "1.0.0"
+var version = "dev"
 
 const instructions = `This server exposes an XWiki instance over the Model Context Protocol.
 
@@ -51,12 +51,18 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 }
 
 func main() {
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	addr := flag.String("addr", envOr("XWIKI_MCP_ADDR", "localhost:8080"), "HTTP listen address")
 	xwikiURL := flag.String("xwiki-url", envOr("XWIKI_BASE_URL", ""), "XWiki REST API base URL, e.g. https://xwiki.example.com/rest/wikis/xwiki")
 	token := flag.String("token", envOr("XWIKI_TOKEN", ""), "Default XWiki token used when the client sends none")
 	allowDelete := flag.Bool("allow-delete", envBool("XWIKI_MCP_ALLOW_DELETE", false), "Enable the delete_page tool (off by default)")
 	timeout := flag.Duration("timeout", envDuration("XWIKI_MCP_TIMEOUT", 60*time.Second), "XWiki HTTP request timeout")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("xwiki-mcp", version)
+		os.Exit(0)
+	}
 
 	if *xwikiURL == "" {
 		fmt.Fprintln(os.Stderr, "error: --xwiki-url (or XWIKI_BASE_URL) is required")
